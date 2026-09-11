@@ -100,8 +100,9 @@ class OscilloscopeApp(QMainWindow):
   tabs=QTabWidget();tabs.addTab(self.live_tab(),'Live / measure');tabs.addTab(self.channel_tab(),'Channels');tabs.addTab(self.trigger_tab(),'Horizontal / trigger');tabs.addTab(self.file_tab(),'Files / replay');tabs.addTab(self.log_tab(),'SCPI / log');return tabs
  def live_tab(self):
   w=QWidget();l=QVBoxLayout(w);g=QGroupBox('Playback control');r=QGridLayout(g)
-  for i,(text,fn) in enumerate([('▶ Run',self.run),('■ Stop',self.stop),('S Single',self.single),('Auto',self.run)]):b=QPushButton(text);b.clicked.connect(fn);r.addWidget(b,i//2,i%2)
-  self.cursor=QCheckBox('Show tracking cursors');self.cursor.toggled.connect(lambda v:(self.wave.a.setVisible(v),self.wave.b.setVisible(v)));r.addWidget(self.cursor,2,0,1,2);l.addWidget(g)
+  for i,(text,fn) in enumerate([('▶ Run',self.run),('■ Stop',self.stop),('S Single',self.single),('Auto',self.run),('Clear temporary trace',self.clear_trace)]):b=QPushButton(text);b.clicked.connect(fn);r.addWidget(b,i//2,i%2)
+  self.cursor=QCheckBox('Show tracking cursors');self.cursor.toggled.connect(lambda v:(self.wave.a.setVisible(v),self.wave.b.setVisible(v)));r.addWidget(self.cursor,3,0,1,2);l.addWidget(g)
+  hint=QLabel('Each acquired frame is appended to the temporary trace in memory. Nothing is written to disk unless you use a Save command.');hint.setWordWrap(True);l.addWidget(hint)
   m=QGroupBox('Live measurements');self.meas=QTextEdit();self.meas.setReadOnly(True);QVBoxLayout(m).addWidget(self.meas);l.addWidget(m,1)
   math=QGroupBox('Custom Math');fr=QFormLayout(math);self.expr=QLineEdit('ch1 - ch2');fr.addRow('Expression',self.expr);l.addWidget(math);return w
  def channel_tab(self):
@@ -119,7 +120,7 @@ class OscilloscopeApp(QMainWindow):
  def file_tab(self):
   w=QWidget();l=QVBoxLayout(w)
   for text,fn in [('Save current CSV',self.save_csv),('Save current NPZ',self.save_npz),('Save plot PNG',self.save_png),('Open NPZ waveform',self.open_npz)]:b=QPushButton(text);b.clicked.connect(fn);l.addWidget(b)
-  self.auto_save=QCheckBox('Batch-save every acquired frame as NPZ');l.addWidget(self.auto_save);l.addStretch();return w
+  l.addWidget(QLabel('Live frames remain temporary in memory. Use a Save command to write the accumulated trace to disk.'));l.addStretch();return w
  def log_tab(self):
   w=QWidget();l=QVBoxLayout(w);self.command=QLineEdit('*IDN?');self.log=QTextEdit();self.log.setReadOnly(True);l.addWidget(self.command);l.addWidget(QPushButton('SCPI command (manual log only)'));l.addWidget(self.log,1);return w
  def shortcuts(self):
@@ -130,9 +131,18 @@ class OscilloscopeApp(QMainWindow):
  def single(self):
   if not self.worker.isRunning():self.worker.once()
  def toggle(self):self.stop() if self.worker.isRunning() else self.run()
+ def clear_trace(self):
+  self.frame=None;self.wave.c1.setData([],[]);self.wave.c2.setData([],[]);self.wave.cm.hide();self.meas.clear();self.bar.showMessage('Temporary live trace cleared')
+ def append_frame(self,f):
+  if self.frame is None:
+   return f
+  previous=self.frame
+  dt=float(np.median(np.diff(f.t))) if len(f.t)>1 else 0.0
+  start=previous.t[-1]+dt if len(previous.t) else 0.0
+  t=start+(f.t-f.t[0])
+  return Frame(np.concatenate((previous.t,t)),np.concatenate((previous.ch1,f.ch1)),np.concatenate((previous.ch2,f.ch2)),f.sample_rate,f.trigger,f.timestamp)
  def on_frame(self,f):
-  self.frame=f;self.wave.draw(f,'LIVE',self.expr.text().strip());a,b=metrics(f.ch1,f.t),metrics(f.ch2,f.t);self.meas.setPlainText('\n'.join([f'{name}: Vmax={d["vmax"]:.4g} V | Vmin={d["vmin"]:.4g} V | Vpp={d["vpp"]:.4g} V | Vavg={d["vavg"]:.4g} V | RMS={d["rms"]:.4g} V | f={d["freq"]:.6g} Hz | T={d["period"]:.6g} s' for name,d in [('CH1',a),('CH2',b)]]));self.bar.showMessage(f'Connected | sample rate {f.sample_rate:.6g} Sa/s | trigger {f.trigger} | {f.timestamp}')
-  if self.auto_save.isChecked():self.save_npz(auto=True)
+  self.frame=self.append_frame(f);self.wave.draw(self.frame,'LIVE',self.expr.text().strip());a,b=metrics(f.ch1,f.t),metrics(f.ch2,f.t);self.meas.setPlainText('\n'.join([f'{name}: Vmax={d["vmax"]:.4g} V | Vmin={d["vmin"]:.4g} V | Vpp={d["vpp"]:.4g} V | Vavg={d["vavg"]:.4g} V | RMS={d["rms"]:.4g} V | f={d["freq"]:.6g} Hz | T={d["period"]:.6g} s' for name,d in [('CH1',a),('CH2',b)]]));self.bar.showMessage(f'Connected | sample rate {f.sample_rate:.6g} Sa/s | trigger {f.trigger} | latest frame {f.timestamp} | temporary trace {len(self.frame.t)} samples')
  def save_csv(self):
   if not self.frame:return
   p,_=QFileDialog.getSaveFileName(self,'Save CSV',f'wave_{datetime.now():%Y%m%d_%H%M%S}.csv','CSV (*.csv)')
